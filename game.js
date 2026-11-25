@@ -1,25 +1,32 @@
 // ============================================================================
-// NetShield (درع الشبكة) - 2D Cyber Defense Action Platformer (Phaser 3)
+// NetShield (درع الشبكة) - 2D Cyber Defense Action Platformer
 // Implements: Scenes, Background images, Object manipulation, Spritesheets,
 // Physics, Input, Cameras, Tile sprites, and Audio output.
 // ============================================================================
 
-// -------------------- Web Audio Synthesizer (Zero External Audio Needed) --------------------
+const CANVAS_W = 900;
+const CANVAS_H = 540;
+const WORLD_W = 2400;
+const WORLD_H = 540;
+const GROUND_Y = 476;
+const GRAVITY = 1250;
+
+// -------------------- Web Audio Sound & Music Engine --------------------
 class CyberAudio {
   constructor() {
     this.ctx = null;
     this.muted = false;
     this.bgmTimer = null;
-    this.stepIndex = 0;
+    this.step = 0;
   }
 
-  init() {
+  ensureCtx() {
     if (!this.ctx) {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      this.ctx = new AudioCtx();
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) this.ctx = new AC();
     }
-    if (this.ctx.state === 'suspended') {
-      this.ctx.resume();
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
     }
   }
 
@@ -33,72 +40,70 @@ class CyberAudio {
     return this.muted;
   }
 
-  playTone(freq, duration, type = 'sine', volume = 0.12, slideTo = null) {
+  tone(freq, dur, type = 'sine', vol = 0.11, slideTo = null) {
     if (this.muted) return;
-    this.init();
+    this.ensureCtx();
+    if (!this.ctx) return;
     const now = this.ctx.currentTime;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     osc.type = type;
     osc.frequency.setValueAtTime(freq, now);
     if (slideTo) {
-      osc.frequency.exponentialRampToValueAtTime(slideTo, now + duration);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(30, slideTo), now + dur);
     }
-    gain.gain.setValueAtTime(volume, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+    gain.gain.setValueAtTime(vol, now);
+    gain.gain.exponentialRampToValueAtTime(0.0008, now + dur);
     osc.connect(gain);
     gain.connect(this.ctx.destination);
     osc.start(now);
-    osc.stop(now + duration);
+    osc.stop(now + dur);
   }
 
-  playJump() {
-    this.playTone(260, 0.18, 'square', 0.08, 560);
+  jump() {
+    this.tone(250, 0.16, 'square', 0.07, 540);
   }
 
-  playPulse() {
-    this.playTone(880, 0.14, 'sawtooth', 0.09, 240);
+  pulse() {
+    this.tone(860, 0.13, 'sawtooth', 0.08, 220);
   }
 
-  playCollect() {
-    this.playTone(587.33, 0.1, 'triangle', 0.12);
-    setTimeout(() => this.playTone(880, 0.16, 'triangle', 0.12), 75);
+  collect() {
+    this.tone(587.33, 0.09, 'triangle', 0.11);
+    setTimeout(() => this.tone(880, 0.14, 'triangle', 0.11), 70);
   }
 
-  playTaskComplete() {
-    const notes = [523.25, 659.25, 783.99, 1046.5];
-    notes.forEach((n, i) => {
-      setTimeout(() => this.playTone(n, 0.16, 'triangle', 0.13), i * 85);
+  taskDone() {
+    [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => {
+      setTimeout(() => this.tone(f, 0.14, 'triangle', 0.12), i * 80);
     });
   }
 
-  playHit() {
-    this.playTone(170, 0.28, 'sawtooth', 0.15, 65);
+  hit() {
+    this.tone(175, 0.25, 'sawtooth', 0.13, 62);
   }
 
-  playWin() {
-    const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5];
-    notes.forEach((n, i) => {
-      setTimeout(() => this.playTone(n, 0.22, 'sine', 0.14), i * 110);
+  win() {
+    [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) => {
+      setTimeout(() => this.tone(f, 0.2, 'sine', 0.13), i * 105);
     });
   }
 
-  playLose() {
-    const notes = [330, 277.18, 220, 164.81];
-    notes.forEach((n, i) => {
-      setTimeout(() => this.playTone(n, 0.25, 'sawtooth', 0.12), i * 140);
+  lose() {
+    [330, 277.18, 220, 164.81].forEach((f, i) => {
+      setTimeout(() => this.tone(f, 0.22, 'sawtooth', 0.11), i * 130);
     });
   }
 
   startBGM() {
     if (this.muted || this.bgmTimer) return;
-    this.init();
-    const bassLine = [110, 110, 146.83, 130.81, 110, 110, 164.81, 146.83];
+    this.ensureCtx();
+    const bass = [110, 110, 146.83, 130.81, 110, 110, 164.81, 146.83];
     this.bgmTimer = setInterval(() => {
-      if (this.muted) return;
-      const freq = bassLine[this.stepIndex % bassLine.length];
-      this.playTone(freq, 0.22, 'sine', 0.045);
-      this.stepIndex++;
+      if (!this.muted) {
+        this.tone(bass[this.step % bass.length], 0.2, 'sine', 0.04);
+        this.step++;
+      }
     }, 320);
   }
 
@@ -110,907 +115,764 @@ class CyberAudio {
   }
 }
 
-const cyberAudio = new CyberAudio();
+// -------------------- Offscreen Spritesheet & Tile Assets --------------------
+function buildVisualAssets() {
+  const fw = 48;
+  const fh = 56;
+  const sheet = document.createElement('canvas');
+  sheet.width = fw * 4;
+  sheet.height = fh;
+  const sctx = sheet.getContext('2d');
 
-// -------------------- Procedural Texture & Spritesheet Generator --------------------
-function generateGameTextures(scene) {
-  // 1. Background Image Texture (Cyber Circuit Grid Sky)
-  if (!scene.textures.exists('cyber_bg')) {
-    const bgCanvas = scene.textures.createCanvas('cyber_bg', 900, 540);
-    const ctx = bgCanvas.getContext();
+  for (let frame = 0; frame < 4; frame++) {
+    const ox = frame * fw;
+    sctx.fillStyle = frame === 3 ? '#38bdf8' : '#0284c7';
+    sctx.fillRect(ox + 10, 22, 28, 20);
 
-    const grad = ctx.createLinearGradient(0, 0, 0, 540);
-    grad.addColorStop(0, '#040814');
-    grad.addColorStop(0.55, '#0a192f');
-    grad.addColorStop(1, '#0f2942');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, 900, 540);
+    sctx.fillStyle = '#e2e8f0';
+    sctx.fillRect(ox + 13, 6, 22, 18);
 
-    // Circuit lines & nodes
-    ctx.strokeStyle = 'rgba(14, 165, 233, 0.16)';
-    ctx.lineWidth = 2;
-    for (let x = 40; x < 900; x += 90) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, 540);
-      ctx.stroke();
-    }
-    for (let y = 40; y < 540; y += 90) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(900, y);
-      ctx.stroke();
-    }
+    sctx.fillStyle = '#00f5d4';
+    sctx.fillRect(ox + 17, 11, 16, 6);
 
-    // Glowing server towers in background
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
-    const towers = [
-      { x: 70, y: 180, w: 65, h: 360 },
-      { x: 240, y: 130, w: 80, h: 410 },
-      { x: 470, y: 200, w: 70, h: 340 },
-      { x: 690, y: 140, w: 85, h: 400 }
-    ];
-    towers.forEach((t) => {
-      ctx.fillRect(t.x, t.y, t.w, t.h);
-      ctx.fillStyle = 'rgba(56, 189, 248, 0.45)';
-      for (let ly = t.y + 18; ly < 500; ly += 26) {
-        ctx.fillRect(t.x + 12, ly, t.w - 24, 5);
-      }
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
-    });
+    sctx.fillStyle = '#1e293b';
+    sctx.fillRect(ox + 14, 24, 20, 18);
+    sctx.fillStyle = '#38bdf8';
+    sctx.fillRect(ox + 20, 28, 8, 8);
 
-    bgCanvas.refresh();
-  }
-
-  // 2. TileSprite Texture (Repeating Cyber Floor Tile 64x64)
-  if (!scene.textures.exists('floor_tile')) {
-    const tileCanvas = scene.textures.createCanvas('floor_tile', 64, 64);
-    const ctx = tileCanvas.getContext();
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 0, 64, 64);
-
-    // Top neon border
-    ctx.fillStyle = '#0ea5e9';
-    ctx.fillRect(0, 0, 64, 6);
-
-    // Circuit pattern inside tile
-    ctx.strokeStyle = '#1e3a5f';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(4, 10, 56, 50);
-
-    ctx.fillStyle = '#38bdf8';
-    ctx.fillRect(14, 24, 12, 4);
-    ctx.fillRect(38, 40, 12, 4);
-    tileCanvas.refresh();
-  }
-
-  // 3. Elevated Platform Texture (160x26)
-  if (!scene.textures.exists('platform_tex')) {
-    const pCanvas = scene.textures.createCanvas('platform_tex', 160, 26);
-    const ctx = pCanvas.getContext();
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(0, 0, 160, 26);
-    ctx.fillStyle = '#22d3ee';
-    ctx.fillRect(0, 0, 160, 4);
-    ctx.fillStyle = '#0284c7';
-    ctx.fillRect(0, 22, 160, 4);
-    pCanvas.refresh();
-  }
-
-  // 4. Spritesheet for Player Character ("Cyber Guardian") - 4 frames (48x56 each)
-  // Frame 0: Idle, Frame 1: Run A, Frame 2: Run B, Frame 3: Jump/Pulse
-  if (!scene.textures.exists('guardian_sheet')) {
-    const fw = 48;
-    const fh = 56;
-    const sheetCanvas = scene.textures.createCanvas('guardian_sheet', fw * 4, fh);
-    const ctx = sheetCanvas.getContext();
-
-    for (let frame = 0; frame < 4; frame++) {
-      const ox = frame * fw;
-
-      // Cape / Aura
-      ctx.fillStyle = frame === 3 ? '#38bdf8' : '#0284c7';
-      ctx.fillRect(ox + 10, 22, 28, 20);
-
-      // Head / Visor Helmet
-      ctx.fillStyle = '#e2e8f0';
-      ctx.fillRect(ox + 13, 6, 22, 18);
-
-      // Neon Cyber Visor
-      ctx.fillStyle = '#00f5d4';
-      ctx.fillRect(ox + 17, 11, 16, 6);
-
-      // Chest Armor
-      ctx.fillStyle = '#1e293b';
-      ctx.fillRect(ox + 14, 24, 20, 18);
-      ctx.fillStyle = '#38bdf8';
-      ctx.fillRect(ox + 20, 28, 8, 8);
-
-      // Legs (Animated across frames)
-      ctx.fillStyle = '#94a3b8';
-      if (frame === 0) {
-        ctx.fillRect(ox + 15, 42, 6, 12);
-        ctx.fillRect(ox + 27, 42, 6, 12);
-      } else if (frame === 1) {
-        ctx.fillRect(ox + 11, 42, 6, 12);
-        ctx.fillRect(ox + 30, 40, 6, 10);
-      } else if (frame === 2) {
-        ctx.fillRect(ox + 14, 40, 6, 10);
-        ctx.fillRect(ox + 28, 42, 6, 12);
-      } else {
-        // Jump pose
-        ctx.fillRect(ox + 12, 40, 7, 9);
-        ctx.fillRect(ox + 29, 39, 7, 9);
-      }
-    }
-    sheetCanvas.refresh();
-
-    // Register frames on the canvas texture so Phaser anims work natively
-    const tex = scene.textures.get('guardian_sheet');
-    for (let i = 0; i < 4; i++) {
-      tex.add(i, 0, i * fw, 0, fw, fh);
+    sctx.fillStyle = '#94a3b8';
+    if (frame === 0) {
+      sctx.fillRect(ox + 15, 42, 6, 12);
+      sctx.fillRect(ox + 27, 42, 6, 12);
+    } else if (frame === 1) {
+      sctx.fillRect(ox + 11, 42, 6, 12);
+      sctx.fillRect(ox + 30, 40, 6, 10);
+    } else if (frame === 2) {
+      sctx.fillRect(ox + 14, 40, 6, 10);
+      sctx.fillRect(ox + 28, 42, 6, 12);
+    } else {
+      sctx.fillRect(ox + 12, 40, 7, 9);
+      sctx.fillRect(ox + 29, 39, 7, 9);
     }
   }
 
-  // 5. Spritesheet for Malware Virus Enemy - 2 frames (40x40 each)
-  if (!scene.textures.exists('virus_sheet')) {
-    const fw = 40;
-    const fh = 40;
-    const vCanvas = scene.textures.createCanvas('virus_sheet', fw * 2, fh);
-    const ctx = vCanvas.getContext();
+  const tile = document.createElement('canvas');
+  tile.width = 64;
+  tile.height = 64;
+  const tctx = tile.getContext('2d');
+  tctx.fillStyle = '#0f172a';
+  tctx.fillRect(0, 0, 64, 64);
+  tctx.fillStyle = '#0ea5e9';
+  tctx.fillRect(0, 0, 64, 6);
+  tctx.strokeStyle = '#1e3a5f';
+  tctx.lineWidth = 2;
+  tctx.strokeRect(4, 10, 56, 50);
+  tctx.fillStyle = '#38bdf8';
+  tctx.fillRect(14, 24, 12, 4);
+  tctx.fillRect(38, 40, 12, 4);
 
-    for (let frame = 0; frame < 2; frame++) {
-      const ox = frame * fw;
-      const pulse = frame === 0 ? 0 : 2;
-
-      ctx.fillStyle = '#ef4444';
-      ctx.beginPath();
-      ctx.arc(ox + 20, 20, 12 + pulse, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Spikes
-      ctx.strokeStyle = '#fca5a5';
-      ctx.lineWidth = 3;
-      const spikeLen = frame === 0 ? 17 : 19;
-      for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
-        ctx.beginPath();
-        ctx.moveTo(ox + 20, 20);
-        ctx.lineTo(ox + 20 + Math.cos(a) * spikeLen, 20 + Math.sin(a) * spikeLen);
-        ctx.stroke();
-      }
-
-      // Angry Eyes
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(ox + 14, 16, 4, 4);
-      ctx.fillRect(ox + 22, 16, 4, 4);
-    }
-    vCanvas.refresh();
-
-    const tex = scene.textures.get('virus_sheet');
-    tex.add(0, 0, 0, 0, fw, fh);
-    tex.add(1, 0, fw, 0, fw, fh);
-  }
-
-  // 6. Encryption Key Texture (28x28)
-  if (!scene.textures.exists('key_tex')) {
-    const kCanvas = scene.textures.createCanvas('key_tex', 28, 28);
-    const ctx = kCanvas.getContext();
-    ctx.fillStyle = '#facc15';
-    ctx.beginPath();
-    ctx.arc(10, 14, 7, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#0f172a';
-    ctx.beginPath();
-    ctx.arc(10, 14, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#facc15';
-    ctx.fillRect(16, 12, 10, 4);
-    ctx.fillRect(21, 16, 3, 4);
-    ctx.fillRect(25, 16, 3, 4);
-    kCanvas.refresh();
-  }
-
-  // 7. Phishing Terminal Node Texture (44x48)
-  if (!scene.textures.exists('phish_node')) {
-    const pCanvas = scene.textures.createCanvas('phish_node', 44, 48);
-    const ctx = pCanvas.getContext();
-    ctx.fillStyle = '#7f1d1d';
-    ctx.fillRect(4, 4, 36, 40);
-    ctx.strokeStyle = '#f87171';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(4, 4, 36, 40);
-
-    // Warning exclamation mark
-    ctx.fillStyle = '#fef08a';
-    ctx.fillRect(20, 11, 4, 16);
-    ctx.fillRect(20, 31, 4, 4);
-    pCanvas.refresh();
-  }
-
-  // 8. Secured Terminal Node Texture (44x48)
-  if (!scene.textures.exists('safe_node')) {
-    const sCanvas = scene.textures.createCanvas('safe_node', 44, 48);
-    const ctx = sCanvas.getContext();
-    ctx.fillStyle = '#064e3b';
-    ctx.fillRect(4, 4, 36, 40);
-    ctx.strokeStyle = '#34d399';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(4, 4, 36, 40);
-
-    // Checkmark
-    ctx.strokeStyle = '#6ee7b7';
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(13, 24);
-    ctx.lineTo(19, 31);
-    ctx.lineTo(31, 16);
-    ctx.stroke();
-    sCanvas.refresh();
-  }
-
-  // 9. Firewall Gate & Main Core (54x76)
-  if (!scene.textures.exists('firewall_core')) {
-    const fCanvas = scene.textures.createCanvas('firewall_core', 54, 76);
-    const ctx = fCanvas.getContext();
-    ctx.fillStyle = '#1e1b4b';
-    ctx.fillRect(4, 4, 46, 68);
-    ctx.strokeStyle = '#818cf8';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(4, 4, 46, 68);
-
-    // Shield emblem
-    ctx.fillStyle = '#38bdf8';
-    ctx.beginPath();
-    ctx.moveTo(27, 16);
-    ctx.lineTo(40, 23);
-    ctx.lineTo(40, 38);
-    ctx.lineTo(27, 52);
-    ctx.lineTo(14, 38);
-    ctx.lineTo(14, 23);
-    ctx.closePath();
-    ctx.fill();
-    fCanvas.refresh();
-  }
-
-  // 10. Movable Security Block (Object Manipulation - 48x48)
-  if (!scene.textures.exists('data_crate')) {
-    const cCanvas = scene.textures.createCanvas('data_crate', 48, 48);
-    const ctx = cCanvas.getContext();
-    ctx.fillStyle = '#0369a1';
-    ctx.fillRect(0, 0, 48, 48);
-    ctx.strokeStyle = '#7dd3fc';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(2, 2, 44, 44);
-    ctx.beginPath();
-    ctx.moveTo(2, 2);
-    ctx.lineTo(46, 46);
-    ctx.moveTo(46, 2);
-    ctx.lineTo(2, 46);
-    ctx.stroke();
-    cCanvas.refresh();
-  }
-
-  // 11. Scan Pulse Projectile (18x8)
-  if (!scene.textures.exists('pulse_beam')) {
-    const bCanvas = scene.textures.createCanvas('pulse_beam', 18, 8);
-    const ctx = bCanvas.getContext();
-    ctx.fillStyle = '#00f5d4';
-    ctx.fillRect(0, 0, 18, 8);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(4, 2, 10, 4);
-    bCanvas.refresh();
-  }
+  return { sheet, fw, fh, tile };
 }
 
-// ============================================================================
-// SCENE 1: MainMenuScene (Title, Mission Brief, Controls, Start Button)
-// ============================================================================
-class MainMenuScene extends Phaser.Scene {
-  constructor() {
-    super({ key: 'MainMenuScene' });
-  }
-
-  create() {
-    generateGameTextures(this);
-
-    // Background image
-    this.add.image(450, 270, 'cyber_bg');
-
-    // Decorative animated floor tile at bottom
-    this.menuFloor = this.add.tileSprite(450, 512, 900, 56, 'floor_tile');
-
-    // Title Panel
-    const panel = this.add.graphics();
-    panel.fillStyle(0x091326, 0.88);
-    panel.lineStyle(2, 0x38bdf8, 1);
-    panel.fillRoundedRect(110, 45, 680, 415, 16);
-    panel.strokeRoundedRect(110, 45, 680, 415, 16);
-
-    this.add.text(450, 92, 'NETSHIELD // درع الشبكة', {
-      fontSize: '36px',
-      fontStyle: 'bold',
-      color: '#38bdf8'
-    }).setOrigin(0.5);
-
-    this.add.text(450, 132, 'Cybersecurity Defense Action Platformer', {
-      fontSize: '16px',
-      color: '#94a3b8'
-    }).setOrigin(0.5);
-
-    // 3 Missions Summary
-    const missionBox = this.add.text(
-      450,
-      235,
-      [
-        'YOUR 3 CYBER MISSIONS:',
-        '1. Neutralize 2 Phishing Nodes using your Scan Pulse [F]',
-        '2. Collect all 3 Encryption Keys across the network',
-        '3. Reach & Activate the Main Firewall Core to win!'
-      ].join('
-'),
-      {
-        fontSize: '17px',
-        color: '#e2e8f0',
-        align: 'center',
-        lineSpacing: 8
-      }
-    ).setOrigin(0.5);
-
-    // Controls Info
-    this.add.text(
-      450,
-      332,
-      'Controls:  [Left / Right] or [A / D] Move   |   [Up / W / Space] Jump   |   [F] Scan Pulse   |   [M] Mute Audio',
-      {
-        fontSize: '13px',
-        color: '#38bdf8'
-      }
-    ).setOrigin(0.5);
-
-    // Start Game Button
-    const startBtn = this.add.rectangle(450, 405, 250, 52, 0x0284c7)
-      .setInteractive({ useHandCursor: true })
-      .setStrokeStyle(2, 0x7dd3fc);
-
-    const startText = this.add.text(450, 405, 'START DEFENSE', {
-      fontSize: '20px',
-      fontStyle: 'bold',
-      color: '#ffffff'
-    }).setOrigin(0.5);
-
-    startBtn.on('pointerover', () => startBtn.setFillStyle(0x0ea5e9));
-    startBtn.on('pointerout', () => startBtn.setFillStyle(0x0284c7));
-    startBtn.on('pointerdown', () => {
-      cyberAudio.init();
-      cyberAudio.startBGM();
-      cyberAudio.playCollect();
-      this.scene.start('GameScene');
-    });
-
-    // Also allow pressing ENTER to start
-    this.input.keyboard.once('keydown-ENTER', () => {
-      cyberAudio.init();
-      cyberAudio.startBGM();
-      cyberAudio.playCollect();
-      this.scene.start('GameScene');
-    });
-  }
-
-  update() {
-    this.menuFloor.tilePositionX += 1.2;
-  }
+function rectsOverlap(a, b) {
+  return (
+    a.x < b.x + b.w &&
+    a.x + a.w > b.x &&
+    a.y < b.y + b.h &&
+    a.y + a.h > b.y
+  );
 }
 
-// ============================================================================
-// SCENE 2: GameScene (Core Gameplay, Physics, Camera, 3 Missions, Audio)
-// ============================================================================
-class GameScene extends Phaser.Scene {
-  constructor() {
-    super({ key: 'GameScene' });
+// -------------------- Game Engine with Scenes --------------------
+class NetShieldEngine {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.audio = new CyberAudio();
+    this.assets = buildVisualAssets();
+
+    this.scene = 'MENU';
+    this.keysDown = {};
+    this.justPressed = {};
+    this.menuFloorOffset = 0;
+    this.animTimer = 0;
+    this.animFrame = 0;
+    this.lastTime = performance.now();
+
+    this.endData = { won: false, score: 0, phishingFixed: 0, keysCollected: 0 };
+    this.resetWorld();
+    this.bindEvents();
+    this.loop(this.lastTime);
   }
 
-  create() {
-    const WORLD_WIDTH = 2400;
-    const WORLD_HEIGHT = 540;
-
-    // Game State
+  resetWorld() {
     this.health = 100;
     this.score = 0;
     this.phishingFixed = 0;
-    this.totalPhishing = 2;
     this.keysCollected = 0;
-    this.totalKeys = 3;
-    this.invulnerable = false;
-    this.facing = 1; // 1 = right, -1 = left
+    this.invulnTimer = 0;
+    this.shakeTimer = 0;
+    this.camX = 0;
+    this.bannerMsg = 'Mission Active: Neutralize Phishing Nodes [F] & Collect Encryption Keys!';
+    this.bannerColor = '#7dd3fc';
 
-    // World Bounds
-    this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+    this.player = {
+      x: 90,
+      y: GROUND_Y - 54,
+      w: 32,
+      h: 54,
+      vx: 0,
+      vy: 0,
+      onGround: false,
+      facing: 1,
+      pulseCooldown: 0
+    };
 
-    // 1. Background Image (Fixed to camera for parallax feel)
-    this.bgImage = this.add.image(450, 270, 'cyber_bg').setScrollFactor(0);
-
-    // 2. TileSprite Ground across the 2400px level
-    this.groundTile = this.add.tileSprite(WORLD_WIDTH / 2, 508, WORLD_WIDTH, 64, 'floor_tile');
-    this.physics.add.existing(this.groundTile, true); // Static physics body
-
-    // 3. Elevated Platforms
-    this.platforms = this.physics.add.staticGroup();
-    const platformCoords = [
-      { x: 340, y: 380 },
-      { x: 640, y: 290 },
-      { x: 960, y: 370 },
-      { x: 1320, y: 280 },
-      { x: 1660, y: 360 },
-      { x: 1980, y: 270 }
+    this.platforms = [
+      { x: 260, y: 380, w: 160, h: 26 },
+      { x: 560, y: 290, w: 160, h: 26 },
+      { x: 880, y: 370, w: 160, h: 26 },
+      { x: 1240, y: 280, w: 160, h: 26 },
+      { x: 1580, y: 360, w: 160, h: 26 },
+      { x: 1900, y: 270, w: 160, h: 26 }
     ];
-    platformCoords.forEach((p) => {
-      this.platforms.create(p.x, p.y, 'platform_tex');
-    });
 
-    // 4. Object Manipulation: Movable Data Crates (Player can push them!)
-    this.crates = this.physics.add.group({
-      bounceX: 0,
-      bounceY: 0.1,
-      dragX: 500
-    });
-    const crate1 = this.crates.create(500, 430, 'data_crate');
-    crate1.setCollideWorldBounds(true);
-    const crate2 = this.crates.create(1480, 430, 'data_crate');
-    crate2.setCollideWorldBounds(true);
-
-    // 5. Animations from Spritesheets
-    if (!this.anims.exists('guardian_idle')) {
-      this.anims.create({
-        key: 'guardian_idle',
-        frames: [{ key: 'guardian_sheet', frame: 0 }],
-        frameRate: 4
-      });
-      this.anims.create({
-        key: 'guardian_run',
-        frames: [
-          { key: 'guardian_sheet', frame: 1 },
-          { key: 'guardian_sheet', frame: 2 }
-        ],
-        frameRate: 8,
-        repeat: -1
-      });
-      this.anims.create({
-        key: 'guardian_jump',
-        frames: [{ key: 'guardian_sheet', frame: 3 }],
-        frameRate: 6
-      });
-    }
-
-    if (!this.anims.exists('virus_pulse')) {
-      this.anims.create({
-        key: 'virus_pulse',
-        frames: [
-          { key: 'virus_sheet', frame: 0 },
-          { key: 'virus_sheet', frame: 1 }
-        ],
-        frameRate: 5,
-        repeat: -1
-      });
-    }
-
-    // 6. Player Character ("Cyber Guardian")
-    this.player = this.physics.add.sprite(90, 420, 'guardian_sheet', 0);
-    this.player.setCollideWorldBounds(true);
-    this.player.body.setSize(30, 50);
-    this.player.body.setOffset(9, 6);
-
-    // 7. Mission 1 Targets: Phishing Nodes (Shoot with Scan Pulse [F])
-    this.phishNodes = this.physics.add.staticGroup();
-    const node1 = this.phishNodes.create(640, 253, 'phish_node');
-    node1.setData('fixed', false);
-    const node2 = this.phishNodes.create(1660, 323, 'phish_node');
-    node2.setData('fixed', false);
-
-    // 8. Mission 2 Targets: 3 Encryption Keys
-    this.keysGroup = this.physics.add.group({ allowGravity: false });
-    const keyPositions = [
-      { x: 340, y: 335 },
-      { x: 1320, y: 235 },
-      { x: 1980, y: 225 }
+    this.crates = [
+      { x: 480, y: GROUND_Y - 48, w: 48, h: 48, vx: 0, vy: 0 },
+      { x: 1450, y: GROUND_Y - 48, w: 48, h: 48, vx: 0, vy: 0 }
     ];
-    keyPositions.forEach((kp) => {
-      const k = this.keysGroup.create(kp.x, kp.y, 'key_tex');
-      this.tweens.add({
-        targets: k,
-        y: kp.y - 8,
-        duration: 900,
-        yoyo: true,
-        repeat: -1
-      });
-    });
 
-    // 9. Mission 3 Target: Main Firewall Core at end of level
-    this.firewallCore = this.physics.add.staticSprite(2280, 438, 'firewall_core');
-    this.firewallLabel = this.add.text(2280, 382, 'MAIN FIREWALL
-(Complete Tasks 1 & 2)', {
-      fontSize: '12px',
-      color: '#93c5fd',
-      align: 'center'
-    }).setOrigin(0.5);
-
-    // 10. Patrolling Malware Viruses
-    this.viruses = this.physics.add.group({ allowGravity: false });
-    const virusConfigs = [
-      { x: 430, y: 452, minX: 320, maxX: 580, vx: 95 },
-      { x: 960, y: 335, minX: 895, maxX: 1025, vx: 75 },
-      { x: 1180, y: 452, minX: 1050, maxX: 1380, vx: 120 },
-      { x: 1850, y: 452, minX: 1720, maxX: 2080, vx: 135 }
+    this.phishNodes = [
+      { x: 618, y: 242, w: 44, h: 48, fixed: false },
+      { x: 1638, y: 312, w: 44, h: 48, fixed: false }
     ];
-    virusConfigs.forEach((vc) => {
-      const v = this.viruses.create(vc.x, vc.y, 'virus_sheet', 0);
-      v.play('virus_pulse');
-      v.setData('minX', vc.minX);
-      v.setData('maxX', vc.maxX);
-      v.setVelocityX(vc.vx);
+
+    this.keysItems = [
+      { x: 326, y: 334, w: 28, h: 28, collected: false, bobPhase: 0 },
+      { x: 1306, y: 234, w: 28, h: 28, collected: false, bobPhase: 1.5 },
+      { x: 1966, y: 224, w: 28, h: 28, collected: false, bobPhase: 3.0 }
+    ];
+
+    this.firewall = { x: 2260, y: GROUND_Y - 76, w: 54, h: 76 };
+
+    this.viruses = [
+      { x: 430, y: GROUND_Y - 38, w: 38, h: 38, minX: 310, maxX: 560, vx: 100, stunTimer: 0 },
+      { x: 940, y: 332, w: 38, h: 38, minX: 885, maxX: 995, vx: 75, stunTimer: 0 },
+      { x: 1180, y: GROUND_Y - 38, w: 38, h: 38, minX: 1060, maxX: 1390, vx: 125, stunTimer: 0 },
+      { x: 1850, y: GROUND_Y - 38, w: 38, h: 38, minX: 1720, maxX: 2100, vx: 135, stunTimer: 0 }
+    ];
+
+    this.pulses = [];
+  }
+
+  setBanner(msg, color = '#7dd3fc') {
+    this.bannerMsg = msg;
+    this.bannerColor = color;
+  }
+
+  bindEvents() {
+    window.addEventListener('keydown', (e) => {
+      const code = e.code;
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(code)) {
+        e.preventDefault();
+      }
+      if (!this.keysDown[code]) {
+        this.justPressed[code] = true;
+      }
+      this.keysDown[code] = true;
     });
 
-    // 11. Scan Pulse Projectiles Group
-    this.pulses = this.physics.add.group({ allowGravity: false });
-
-    // 12. Physics Colliders & Overlaps
-    this.physics.add.collider(this.player, this.groundTile);
-    this.physics.add.collider(this.player, this.platforms);
-    this.physics.add.collider(this.player, this.crates);
-    this.physics.add.collider(this.crates, this.groundTile);
-    this.physics.add.collider(this.crates, this.platforms);
-
-    // Collect Encryption Keys
-    this.physics.add.overlap(this.player, this.keysGroup, this.handleCollectKey, null, this);
-
-    // Scan Pulse hits Phishing Node
-    this.physics.add.overlap(this.pulses, this.phishNodes, this.handleFixPhishing, null, this);
-
-    // Scan Pulse pushes/stuns Virus
-    this.physics.add.overlap(this.pulses, this.viruses, this.handlePulseVirus, null, this);
-
-    // Player touches Virus
-    this.physics.add.overlap(this.player, this.viruses, this.handlePlayerHit, null, this);
-
-    // Player reaches Main Firewall
-    this.physics.add.overlap(this.player, this.firewallCore, this.handleReachFirewall, null, this);
-
-    // 13. Camera Setup (Follows Player across the 2400px level)
-    this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
-
-    // 14. Keyboard Inputs
-    this.cursors = this.input.keyboard.createCursorKeys();
-    this.keysWASD = this.input.keyboard.addKeys({
-      up: Phaser.Input.Keyboard.KeyCodes.W,
-      left: Phaser.Input.Keyboard.KeyCodes.A,
-      down: Phaser.Input.Keyboard.KeyCodes.S,
-      right: Phaser.Input.Keyboard.KeyCodes.D,
-      fire: Phaser.Input.Keyboard.KeyCodes.F,
-      mute: Phaser.Input.Keyboard.KeyCodes.M
+    window.addEventListener('keyup', (e) => {
+      this.keysDown[e.code] = false;
     });
 
-    // 15. Heads-Up Display (HUD - Fixed to Camera)
-    this.hudBg = this.add.graphics().setScrollFactor(0);
-    this.hudBg.fillStyle(0x060d1f, 0.82);
-    this.hudBg.fillRect(0, 0, 900, 62);
-    this.hudBg.lineStyle(1, 0x0ea5e9, 0.7);
-    this.hudBg.lineBetween(0, 62, 900, 62);
+    this.canvas.addEventListener('click', (e) => {
+      const rect = this.canvas.getBoundingClientRect();
+      const scaleX = this.canvas.width / rect.width;
+      const scaleY = this.canvas.height / rect.height;
+      const x = (e.clientX - rect.left) * scaleX;
+      const y = (e.clientY - rect.top) * scaleY;
 
-    this.healthText = this.add.text(18, 12, 'SYSTEM INTEGRITY: 100%', {
-      fontSize: '15px',
-      fontStyle: 'bold',
-      color: '#34d399'
-    }).setScrollFactor(0);
+      this.audio.ensureCtx();
 
-    this.scoreText = this.add.text(18, 35, 'SCORE: 0', {
-      fontSize: '14px',
-      color: '#38bdf8'
-    }).setScrollFactor(0);
-
-    this.missionText = this.add.text(275, 11, '', {
-      fontSize: '13px',
-      color: '#f8fafc',
-      lineSpacing: 4
-    }).setScrollFactor(0);
-
-    this.muteText = this.add.text(882, 14, cyberAudio.muted ? '[M] AUDIO: OFF' : '[M] AUDIO: ON', {
-      fontSize: '13px',
-      color: '#fbbf24'
-    }).setOrigin(1, 0).setScrollFactor(0).setInteractive({ useHandCursor: true });
-
-    this.muteText.on('pointerdown', () => this.toggleSound());
-
-    this.statusBanner = this.add.text(450, 84, 'Mission Active: Neutralize Phishing Nodes & Collect Encryption Keys!', {
-      fontSize: '14px',
-      fontStyle: 'bold',
-      color: '#7dd3fc',
-      backgroundColor: 'rgba(15, 23, 42, 0.75)',
-      padding: { x: 10, y: 4 }
-    }).setOrigin(0.5).setScrollFactor(0);
-
-    this.updateHUD();
-  }
-
-  toggleSound() {
-    const isMuted = cyberAudio.toggleMute();
-    this.muteText.setText(isMuted ? '[M] AUDIO: OFF' : '[M] AUDIO: ON');
-  }
-
-  updateHUD() {
-    this.healthText.setText(`SYSTEM INTEGRITY: ${this.health}%`);
-    this.healthText.setColor(this.health > 50 ? '#34d399' : this.health > 25 ? '#fbbf24' : '#f87171');
-    this.scoreText.setText(`SCORE: ${this.score}`);
-
-    const m1 = this.phishingFixed >= this.totalPhishing ? 'DONE' : `${this.phishingFixed}/${this.totalPhishing}`;
-    const m2 = this.keysCollected >= this.totalKeys ? 'DONE' : `${this.keysCollected}/${this.totalKeys}`;
-    const m3 = (this.phishingFixed >= this.totalPhishing && this.keysCollected >= this.totalKeys)
-      ? 'READY - GO TO FIREWALL!'
-      : 'LOCKED';
-
-    this.missionText.setText([
-      `Task 1 (Phishing Nodes): [${m1}]   |   Task 2 (Encryption Keys): [${m2}]`,
-      `Task 3 (Activate Main Firewall): [${m3}]`
-    ].join('
-'));
-  }
-
-  showBanner(msg, color = '#7dd3fc') {
-    this.statusBanner.setText(msg);
-    this.statusBanner.setColor(color);
-  }
-
-  fireScanPulse() {
-    cyberAudio.playPulse();
-    const pulse = this.pulses.create(
-      this.player.x + this.facing * 26,
-      this.player.y - 2,
-      'pulse_beam'
-    );
-    pulse.setVelocityX(this.facing * 520);
-    this.time.delayedCall(650, () => {
-      if (pulse && pulse.active) pulse.destroy();
-    });
-  }
-
-  handleFixPhishing(pulse, node) {
-    pulse.destroy();
-    if (node.getData('fixed')) return;
-
-    node.setData('fixed', true);
-    node.setTexture('safe_node');
-    this.phishingFixed += 1;
-    this.score += 150;
-    cyberAudio.playTaskComplete();
-    this.showBanner('Phishing Attack Neutralized! (+150 pts)', '#34d399');
-    this.updateHUD();
-  }
-
-  handleCollectKey(player, key) {
-    key.destroy();
-    this.keysCollected += 1;
-    this.score += 100;
-    cyberAudio.playCollect();
-    this.showBanner(`Encryption Key Secured (${this.keysCollected}/${this.totalKeys})! (+100 pts)`, '#facc15');
-    this.updateHUD();
-  }
-
-  handlePulseVirus(pulse, virus) {
-    pulse.destroy();
-    // Knock back virus temporarily
-    virus.setTint(0x38bdf8);
-    virus.setVelocityX(this.facing * 180);
-    this.time.delayedCall(500, () => {
-      if (virus && virus.active) {
-        virus.clearTint();
-        virus.setVelocityX(this.facing * 110);
+      if (this.scene === 'MENU') {
+        if (x >= 325 && x <= 575 && y >= 379 && y <= 431) {
+          this.startGame();
+        }
+      } else if (this.scene === 'PLAY') {
+        if (x >= 765 && x <= 888 && y >= 10 && y <= 40) {
+          this.audio.toggleMute();
+        }
+      } else if (this.scene === 'END') {
+        if (x >= 335 && x <= 565 && y >= 360 && y <= 410) {
+          this.startGame();
+        }
       }
     });
   }
 
-  handlePlayerHit(player, virus) {
-    if (this.invulnerable) return;
+  startGame() {
+    this.resetWorld();
+    this.scene = 'PLAY';
+    this.audio.startBGM();
+    this.audio.collect();
+  }
 
-    this.invulnerable = true;
+  firePulse() {
+    if (this.player.pulseCooldown > 0) return;
+    this.player.pulseCooldown = 0.28;
+    this.audio.pulse();
+    const px = this.player.facing === 1 ? this.player.x + this.player.w + 4 : this.player.x - 22;
+    this.pulses.push({
+      x: px,
+      y: this.player.y + 22,
+      w: 18,
+      h: 8,
+      vx: this.player.facing * 560,
+      life: 0.65
+    });
+  }
+
+  damagePlayer() {
+    if (this.invulnTimer > 0) return;
+    this.invulnTimer = 1.0;
+    this.shakeTimer = 0.2;
     this.health = Math.max(0, this.health - 25);
-    cyberAudio.playHit();
-    this.cameras.main.shake(180, 0.01);
-    this.player.setTint(0xf87171);
-    this.showBanner('WARNING: Malware Breach Detected! (-25% Integrity)', '#f87171');
-    this.updateHUD();
+    this.audio.hit();
+    this.setBanner('WARNING: Malware Breach Detected! (-25% Integrity)', '#f87171');
 
     if (this.health <= 0) {
-      cyberAudio.stopBGM();
-      cyberAudio.playLose();
-      this.scene.start('EndScene', {
+      this.audio.stopBGM();
+      this.audio.lose();
+      this.endData = {
         won: false,
         score: this.score,
         phishingFixed: this.phishingFixed,
         keysCollected: this.keysCollected
-      });
+      };
+      this.scene = 'END';
+    }
+  }
+
+  update(dt) {
+    if (this.justPressed['KeyM']) {
+      this.audio.toggleMute();
+    }
+
+    if (this.scene === 'MENU') {
+      this.menuFloorOffset = (this.menuFloorOffset + 72 * dt) % 64;
+      if (this.justPressed['Enter'] || this.justPressed['Space']) {
+        this.startGame();
+      }
+    } else if (this.scene === 'PLAY') {
+      this.updatePlay(dt);
+    } else if (this.scene === 'END') {
+      if (this.justPressed['Enter'] || this.justPressed['KeyR']) {
+        this.startGame();
+      }
+    }
+
+    this.justPressed = {};
+  }
+
+  updatePlay(dt) {
+    const p = this.player;
+    if (p.pulseCooldown > 0) p.pulseCooldown -= dt;
+    if (this.invulnTimer > 0) this.invulnTimer -= dt;
+    if (this.shakeTimer > 0) this.shakeTimer -= dt;
+
+    const moveLeft = this.keysDown['ArrowLeft'] || this.keysDown['KeyA'];
+    const moveRight = this.keysDown['ArrowRight'] || this.keysDown['KeyD'];
+    const jumpPressed = this.justPressed['ArrowUp'] || this.justPressed['KeyW'] || this.justPressed['Space'];
+
+    if (moveLeft && !moveRight) {
+      p.vx = -240;
+      p.facing = -1;
+    } else if (moveRight && !moveLeft) {
+      p.vx = 240;
+      p.facing = 1;
+    } else {
+      p.vx = 0;
+    }
+
+    if (jumpPressed && p.onGround) {
+      p.vy = -520;
+      p.onGround = false;
+      this.audio.jump();
+    }
+
+    if (this.justPressed['KeyF']) {
+      this.firePulse();
+    }
+
+    p.vy += GRAVITY * dt;
+    p.x += p.vx * dt;
+    p.x = Math.max(0, Math.min(WORLD_W - p.w, p.x));
+
+    for (const c of this.crates) {
+      if (rectsOverlap(p, c)) {
+        if (p.vx > 0) {
+          c.x = p.x + p.w;
+        } else if (p.vx < 0) {
+          c.x = p.x - c.w;
+        }
+        c.x = Math.max(0, Math.min(WORLD_W - c.w, c.x));
+      }
+      c.vy += GRAVITY * dt;
+      c.y += c.vy * dt;
+      if (c.y + c.h >= GROUND_Y) {
+        c.y = GROUND_Y - c.h;
+        c.vy = 0;
+      }
+      for (const plat of this.platforms) {
+        if (c.vy >= 0 && rectsOverlap({ x: c.x, y: c.y + c.h - 10, w: c.w, h: 12 }, plat)) {
+          c.y = plat.y - c.h;
+          c.vy = 0;
+        }
+      }
+    }
+
+    const prevBottom = p.y + p.h;
+    p.y += p.vy * dt;
+    p.onGround = false;
+
+    if (p.y + p.h >= GROUND_Y) {
+      p.y = GROUND_Y - p.h;
+      p.vy = 0;
+      p.onGround = true;
+    }
+
+    if (p.vy >= 0) {
+      for (const plat of this.platforms) {
+        const horizOverlap = p.x + p.w - 4 > plat.x && p.x + 4 < plat.x + plat.w;
+        if (horizOverlap && prevBottom <= plat.y + 12 && p.y + p.h >= plat.y) {
+          p.y = plat.y - p.h;
+          p.vy = 0;
+          p.onGround = true;
+        }
+      }
+    }
+
+    if (!p.onGround) {
+      this.animFrame = 3;
+    } else if (Math.abs(p.vx) > 10) {
+      this.animTimer += dt;
+      if (this.animTimer >= 0.12) {
+        this.animTimer = 0;
+        this.animFrame = this.animFrame === 1 ? 2 : 1;
+      }
+    } else {
+      this.animFrame = 0;
+    }
+
+    const targetCamX = Math.max(0, Math.min(WORLD_W - CANVAS_W, p.x + p.w / 2 - CANVAS_W * 0.35));
+    this.camX += (targetCamX - this.camX) * Math.min(1, dt * 8);
+
+    for (let i = this.pulses.length - 1; i >= 0; i--) {
+      const b = this.pulses[i];
+      b.x += b.vx * dt;
+      b.life -= dt;
+      let remove = b.life <= 0 || b.x < 0 || b.x > WORLD_W;
+
+      if (!remove) {
+        for (const node of this.phishNodes) {
+          if (!node.fixed && rectsOverlap(b, node)) {
+            node.fixed = true;
+            this.phishingFixed += 1;
+            this.score += 150;
+            remove = true;
+            this.audio.taskDone();
+            this.setBanner('Phishing Attack Neutralized! (+150 pts)', '#34d399');
+            break;
+          }
+        }
+      }
+
+      if (!remove) {
+        for (const v of this.viruses) {
+          if (rectsOverlap(b, v)) {
+            v.stunTimer = 0.8;
+            v.vx = (b.vx > 0 ? 1 : -1) * 160;
+            remove = true;
+            break;
+          }
+        }
+      }
+
+      if (remove) this.pulses.splice(i, 1);
+    }
+
+    for (const k of this.keysItems) {
+      k.bobPhase += dt * 4;
+      if (!k.collected && rectsOverlap(p, k)) {
+        k.collected = true;
+        this.keysCollected += 1;
+        this.score += 100;
+        this.audio.collect();
+        this.setBanner(`Encryption Key Secured (${this.keysCollected}/3)! (+100 pts)`, '#facc15');
+      }
+    }
+
+    for (const v of this.viruses) {
+      if (v.stunTimer > 0) v.stunTimer -= dt;
+      v.x += v.vx * dt;
+      if (v.x <= v.minX) {
+        v.x = v.minX;
+        v.vx = Math.abs(v.vx) || 100;
+      } else if (v.x + v.w >= v.maxX) {
+        v.x = v.maxX - v.w;
+        v.vx = -(Math.abs(v.vx) || 100);
+      }
+
+      if (rectsOverlap(p, v)) {
+        this.damagePlayer();
+      }
+    }
+
+    if (rectsOverlap(p, this.firewall)) {
+      if (this.phishingFixed >= this.phishNodes.length && this.keysCollected >= this.keysItems.length) {
+        this.score += 300;
+        this.audio.stopBGM();
+        this.audio.win();
+        this.endData = {
+          won: true,
+          score: this.score,
+          phishingFixed: this.phishingFixed,
+          keysCollected: this.keysCollected
+        };
+        this.scene = 'END';
+      } else {
+        this.setBanner('Firewall Locked! Complete Task 1 (Phishing) & Task 2 (Keys) first.', '#fbbf24');
+      }
+    }
+  }
+
+  drawBackground(ctx, scrollX) {
+    const grad = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
+    grad.addColorStop(0, '#040814');
+    grad.addColorStop(0.55, '#0a192f');
+    grad.addColorStop(1, '#0f2942');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+    ctx.strokeStyle = 'rgba(14, 165, 233, 0.14)';
+    ctx.lineWidth = 1.5;
+    const gridOffset = -(scrollX * 0.25) % 90;
+    for (let x = gridOffset; x < CANVAS_W; x += 90) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, CANVAS_H);
+      ctx.stroke();
+    }
+    for (let y = 40; y < CANVAS_H; y += 90) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(CANVAS_W, y);
+      ctx.stroke();
+    }
+
+    const towers = [
+      { bx: 120, y: 170, w: 68, h: 310 },
+      { bx: 420, y: 125, w: 82, h: 355 },
+      { bx: 780, y: 190, w: 72, h: 290 },
+      { bx: 1150, y: 140, w: 86, h: 340 },
+      { bx: 1520, y: 165, w: 74, h: 315 }
+    ];
+    towers.forEach((t) => {
+      const sx = t.bx - scrollX * 0.4;
+      if (sx + t.w < -40 || sx > CANVAS_W + 40) return;
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+      ctx.fillRect(sx, t.y, t.w, t.h);
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.35)';
+      for (let ly = t.y + 16; ly < 455; ly += 24) {
+        ctx.fillRect(sx + 12, ly, t.w - 24, 5);
+      }
+    });
+  }
+
+  drawTiledFloor(ctx, offsetX, width, y, height) {
+    const tw = 64;
+    const startX = -((offsetX % tw) + tw) % tw;
+    for (let x = startX; x < width + tw; x += tw) {
+      ctx.drawImage(this.assets.tile, x, y, tw, height);
+    }
+  }
+
+  render() {
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+
+    if (this.scene === 'MENU') {
+      this.drawBackground(ctx, 0);
+      this.drawTiledFloor(ctx, this.menuFloorOffset, CANVAS_W, GROUND_Y, 64);
+
+      ctx.fillStyle = 'rgba(9, 19, 38, 0.9)';
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(110, 42, 680, 412, 16);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#38bdf8';
+      ctx.font = 'bold 34px Segoe UI, sans-serif';
+      ctx.fillText('NETSHIELD // درع الشبكة', 450, 90);
+
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '15px Segoe UI, sans-serif';
+      ctx.fillText('Cybersecurity Defense Action Platformer', 450, 124);
+
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = '17px Segoe UI, sans-serif';
+      ctx.fillText('YOUR 3 CYBER MISSIONS:', 450, 174);
+      ctx.font = '15px Segoe UI, sans-serif';
+      ctx.fillText('1. Neutralize 2 Phishing Nodes using Scan Pulse [F]', 450, 206);
+      ctx.fillText('2. Collect all 3 Encryption Keys across the network', 450, 234);
+      ctx.fillText('3. Reach & Activate the Main Firewall Core to win!', 450, 262);
+
+      ctx.fillStyle = '#38bdf8';
+      ctx.font = '13px Segoe UI, sans-serif';
+      ctx.fillText('Controls: [A/D or Left/Right] Move | [W/Up/Space] Jump | [F] Pulse | [M] Audio', 450, 326);
+
+      ctx.fillStyle = '#0284c7';
+      ctx.strokeStyle = '#7dd3fc';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(325, 379, 250, 52, 8);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 19px Segoe UI, sans-serif';
+      ctx.fillText('START DEFENSE', 450, 412);
       return;
     }
 
-    this.time.delayedCall(1000, () => {
-      this.invulnerable = false;
-      if (this.player && this.player.active) this.player.clearTint();
-    });
-  }
-
-  handleReachFirewall() {
-    if (this.phishingFixed >= this.totalPhishing && this.keysCollected >= this.totalKeys) {
-      this.score += 300;
-      cyberAudio.stopBGM();
-      cyberAudio.playWin();
-      this.scene.start('EndScene', {
-        won: true,
-        score: this.score,
-        phishingFixed: this.phishingFixed,
-        keysCollected: this.keysCollected
-      });
-    } else {
-      this.showBanner('Firewall Locked! Finish Task 1 (Phishing) & Task 2 (Keys) first.', '#fbbf24');
-    }
-  }
-
-  update() {
-    // Mute toggle key
-    if (Phaser.Input.Keyboard.JustDown(this.keysWASD.mute)) {
-      this.toggleSound();
-    }
-
-    // Horizontal Movement
-    const moveLeft = this.cursors.left.isDown || this.keysWASD.left.isDown;
-    const moveRight = this.cursors.right.isDown || this.keysWASD.right.isDown;
-    const onGround = this.player.body.blocked.down || this.player.body.touching.down;
-
-    if (moveLeft) {
-      this.player.setVelocityX(-230);
-      this.player.setFlipX(true);
-      this.facing = -1;
-      if (onGround) this.player.anims.play('guardian_run', true);
-    } else if (moveRight) {
-      this.player.setVelocityX(230);
-      this.player.setFlipX(false);
-      this.facing = 1;
-      if (onGround) this.player.anims.play('guardian_run', true);
-    } else {
-      this.player.setVelocityX(0);
-      if (onGround) this.player.anims.play('guardian_idle', true);
-    }
-
-    // Jump
-    const jumpPressed =
-      Phaser.Input.Keyboard.JustDown(this.cursors.up) ||
-      Phaser.Input.Keyboard.JustDown(this.cursors.space) ||
-      Phaser.Input.Keyboard.JustDown(this.keysWASD.up);
-
-    if (jumpPressed && onGround) {
-      this.player.setVelocityY(-460);
-      cyberAudio.playJump();
-    }
-
-    if (!onGround) {
-      this.player.anims.play('guardian_jump', true);
-    }
-
-    // Fire Scan Pulse
-    if (Phaser.Input.Keyboard.JustDown(this.keysWASD.fire)) {
-      this.fireScanPulse();
-    }
-
-    // Patrol logic for Malware Viruses
-    this.viruses.children.iterate((v) => {
-      if (!v) return;
-      const minX = v.getData('minX');
-      const maxX = v.getData('maxX');
-      if (v.x <= minX) {
-        v.setVelocityX(Math.abs(v.body.velocity.x) || 100);
-      } else if (v.x >= maxX) {
-        v.setVelocityX(-Math.abs(v.body.velocity.x) || -100);
+    if (this.scene === 'PLAY') {
+      let shakeX = 0;
+      let shakeY = 0;
+      if (this.shakeTimer > 0) {
+        shakeX = (Math.random() - 0.5) * 10;
+        shakeY = (Math.random() - 0.5) * 10;
       }
-    });
+
+      this.drawBackground(ctx, this.camX);
+
+      ctx.save();
+      ctx.translate(-this.camX + shakeX, shakeY);
+
+      this.drawTiledFloor(ctx, 0, WORLD_W, GROUND_Y, 64);
+
+      for (const plat of this.platforms) {
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(plat.x, plat.y, plat.w, plat.h);
+        ctx.fillStyle = '#22d3ee';
+        ctx.fillRect(plat.x, plat.y, plat.w, 4);
+        ctx.fillStyle = '#0284c7';
+        ctx.fillRect(plat.x, plat.y + plat.h - 4, plat.w, 4);
+      }
+
+      for (const c of this.crates) {
+        ctx.fillStyle = '#0369a1';
+        ctx.fillRect(c.x, c.y, c.w, c.h);
+        ctx.strokeStyle = '#7dd3fc';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(c.x + 2, c.y + 2, c.w - 4, c.h - 4);
+        ctx.beginPath();
+        ctx.moveTo(c.x + 4, c.y + 4);
+        ctx.lineTo(c.x + c.w - 4, c.y + c.h - 4);
+        ctx.moveTo(c.x + c.w - 4, c.y + 4);
+        ctx.lineTo(c.x + 4, c.y + c.h - 4);
+        ctx.stroke();
+      }
+
+      for (const node of this.phishNodes) {
+        ctx.fillStyle = node.fixed ? '#064e3b' : '#7f1d1d';
+        ctx.strokeStyle = node.fixed ? '#34d399' : '#f87171';
+        ctx.lineWidth = 3;
+        ctx.fillRect(node.x, node.y, node.w, node.h);
+        ctx.strokeRect(node.x, node.y, node.w, node.h);
+
+        ctx.fillStyle = node.fixed ? '#6ee7b7' : '#fef08a';
+        ctx.font = 'bold 20px Segoe UI, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(node.fixed ? '✓' : '!', node.x + node.w / 2, node.y + 31);
+      }
+
+      for (const k of this.keysItems) {
+        if (k.collected) continue;
+        const bobY = k.y + Math.sin(k.bobPhase) * 5;
+        ctx.fillStyle = '#facc15';
+        ctx.beginPath();
+        ctx.arc(k.x + 10, bobY + 14, 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillRect(k.x + 16, bobY + 12, 10, 4);
+        ctx.fillRect(k.x + 21, bobY + 16, 3, 4);
+      }
+
+      const fw = this.firewall;
+      ctx.fillStyle = '#1e1b4b';
+      ctx.strokeStyle = '#818cf8';
+      ctx.lineWidth = 3;
+      ctx.fillRect(fw.x, fw.y, fw.w, fw.h);
+      ctx.strokeRect(fw.x, fw.y, fw.w, fw.h);
+
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath();
+      ctx.moveTo(fw.x + 27, fw.y + 16);
+      ctx.lineTo(fw.x + 40, fw.y + 23);
+      ctx.lineTo(fw.x + 40, fw.y + 38);
+      ctx.lineTo(fw.x + 27, fw.y + 52);
+      ctx.lineTo(fw.x + 14, fw.y + 38);
+      ctx.lineTo(fw.x + 14, fw.y + 23);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = '#93c5fd';
+      ctx.font = '12px Segoe UI, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('FIREWALL', fw.x + fw.w / 2, fw.y - 10);
+
+      for (const v of this.viruses) {
+        ctx.fillStyle = v.stunTimer > 0 ? '#38bdf8' : '#ef4444';
+        ctx.beginPath();
+        ctx.arc(v.x + v.w / 2, v.y + v.h / 2, 14, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(v.x + 11, v.y + 15, 4, 4);
+        ctx.fillRect(v.x + 22, v.y + 15, 4, 4);
+      }
+
+      for (const b of this.pulses) {
+        ctx.fillStyle = '#00f5d4';
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+      }
+
+      const p = this.player;
+      const sx = this.animFrame * this.assets.fw;
+      ctx.save();
+      if (this.invulnTimer > 0 && Math.floor(this.invulnTimer * 16) % 2 === 0) {
+        ctx.globalAlpha = 0.45;
+      }
+      if (p.facing === -1) {
+        ctx.translate(p.x + p.w + 8, p.y - 2);
+        ctx.scale(-1, 1);
+        ctx.drawImage(this.assets.sheet, sx, 0, this.assets.fw, this.assets.fh, 0, 0, 48, 56);
+      } else {
+        ctx.drawImage(this.assets.sheet, sx, 0, this.assets.fw, this.assets.fh, p.x - 8, p.y - 2, 48, 56);
+      }
+      ctx.restore();
+
+      ctx.restore();
+
+      ctx.fillStyle = 'rgba(6, 13, 31, 0.86)';
+      ctx.fillRect(0, 0, CANVAS_W, 62);
+      ctx.strokeStyle = 'rgba(14, 165, 233, 0.7)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, 62);
+      ctx.lineTo(CANVAS_W, 62);
+      ctx.stroke();
+
+      ctx.textAlign = 'left';
+      ctx.fillStyle = this.health > 50 ? '#34d399' : this.health > 25 ? '#fbbf24' : '#f87171';
+      ctx.font = 'bold 15px Segoe UI, sans-serif';
+      ctx.fillText(`SYSTEM INTEGRITY: ${this.health}%`, 18, 22);
+
+      ctx.fillStyle = '#38bdf8';
+      ctx.font = '14px Segoe UI, sans-serif';
+      ctx.fillText(`SCORE: ${this.score}`, 18, 46);
+
+      const m1 = this.phishingFixed >= this.phishNodes.length ? 'DONE' : `${this.phishingFixed}/${this.phishNodes.length}`;
+      const m2 = this.keysCollected >= this.keysItems.length ? 'DONE' : `${this.keysCollected}/${this.keysItems.length}`;
+      const m3 =
+        this.phishingFixed >= this.phishNodes.length && this.keysCollected >= this.keysItems.length
+          ? 'READY -> FIREWALL!'
+          : 'LOCKED';
+
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = '13px Segoe UI, sans-serif';
+      ctx.fillText(`Task 1 (Phishing): [${m1}]   |   Task 2 (Keys): [${m2}]`, 265, 23);
+      ctx.fillText(`Task 3 (Main Firewall): [${m3}]`, 265, 45);
+
+      ctx.fillStyle = '#1e293b';
+      ctx.strokeStyle = '#fbbf24';
+      ctx.fillRect(765, 10, 123, 30);
+      ctx.strokeRect(765, 10, 123, 30);
+      ctx.fillStyle = '#fbbf24';
+      ctx.font = 'bold 12px Segoe UI, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(this.audio.muted ? '[M] AUDIO: OFF' : '[M] AUDIO: ON', 826, 29);
+
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.82)';
+      ctx.fillRect(195, 70, 510, 26);
+      ctx.fillStyle = this.bannerColor;
+      ctx.font = 'bold 13px Segoe UI, sans-serif';
+      ctx.fillText(this.bannerMsg, 450, 87);
+      return;
+    }
+
+    if (this.scene === 'END') {
+      this.drawBackground(ctx, 0);
+
+      ctx.fillStyle = 'rgba(9, 19, 38, 0.92)';
+      ctx.strokeStyle = this.endData.won ? '#34d399' : '#f87171';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.roundRect(160, 75, 580, 380, 16);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.textAlign = 'center';
+      ctx.fillStyle = this.endData.won ? '#34d399' : '#f87171';
+      ctx.font = 'bold 34px Segoe UI, sans-serif';
+      ctx.fillText(this.endData.won ? 'NETWORK SECURED!' : 'SYSTEM BREACHED!', 450, 132);
+
+      ctx.fillStyle = '#cbd5e1';
+      ctx.font = '15px Segoe UI, sans-serif';
+      ctx.fillText(
+        this.endData.won
+          ? 'All cyber threats neutralized & Main Firewall activated!'
+          : 'Malware overwhelmed system integrity. Try again!',
+        450,
+        172
+      );
+
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = '17px Segoe UI, sans-serif';
+      ctx.fillText(`Final Score: ${this.endData.score}`, 450, 230);
+      ctx.fillText(`Phishing Nodes Neutralized: ${this.endData.phishingFixed} / 2`, 450, 264);
+      ctx.fillText(`Encryption Keys Collected: ${this.endData.keysCollected} / 3`, 450, 298);
+
+      ctx.fillStyle = '#0284c7';
+      ctx.strokeStyle = '#7dd3fc';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(335, 360, 230, 50, 8);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 18px Segoe UI, sans-serif';
+      ctx.fillText('PLAY AGAIN', 450, 392);
+    }
+  }
+
+  loop(now) {
+    const dt = Math.min(0.05, Math.max(0.001, (now - this.lastTime) / 1000));
+    this.lastTime = now;
+    this.update(dt);
+    this.render();
+    requestAnimationFrame((t) => this.loop(t));
   }
 }
 
-// ============================================================================
-// SCENE 3: EndScene (Victory / Breach Screen & Replay Button)
-// ============================================================================
-class EndScene extends Phaser.Scene {
-  constructor() {
-    super({ key: 'EndScene' });
-  }
-
-  init(data) {
-    this.won = data.won || false;
-    this.finalScore = data.score || 0;
-    this.phishingFixed = data.phishingFixed || 0;
-    this.keysCollected = data.keysCollected || 0;
-  }
-
-  create() {
-    this.add.image(450, 270, 'cyber_bg');
-
-    const card = this.add.graphics();
-    card.fillStyle(0x091326, 0.9);
-    card.lineStyle(3, this.won ? 0x34d399 : 0xf87171, 1);
-    card.fillRoundedRect(160, 75, 580, 380, 16);
-    card.strokeRoundedRect(160, 75, 580, 380, 16);
-
-    this.add.text(
-      450,
-      135,
-      this.won ? 'NETWORK SECURED!' : 'SYSTEM BREACHED!',
-      {
-        fontSize: '36px',
-        fontStyle: 'bold',
-        color: this.won ? '#34d399' : '#f87171'
-      }
-    ).setOrigin(0.5);
-
-    this.add.text(
-      450,
-      180,
-      this.won
-        ? 'All cyber threats neutralized & Main Firewall activated!'
-        : 'Malware overwhelmed system integrity. Try again!',
-      {
-        fontSize: '16px',
-        color: '#cbd5e1'
-      }
-    ).setOrigin(0.5);
-
-    this.add.text(
-      450,
-      265,
-      [
-        `Final Score: ${this.finalScore}`,
-        `Phishing Nodes Neutralized: ${this.phishingFixed} / 2`,
-        `Encryption Keys Collected: ${this.keysCollected} / 3`
-      ].join('
-'),
-      {
-        fontSize: '18px',
-        color: '#f8fafc',
-        align: 'center',
-        lineSpacing: 10
-      }
-    ).setOrigin(0.5);
-
-    const replayBtn = this.add.rectangle(450, 385, 230, 50, 0x0284c7)
-      .setInteractive({ useHandCursor: true })
-      .setStrokeStyle(2, 0x7dd3fc);
-
-    this.add.text(450, 385, 'PLAY AGAIN', {
-      fontSize: '19px',
-      fontStyle: 'bold',
-      color: '#ffffff'
-    }).setOrigin(0.5);
-
-    replayBtn.on('pointerover', () => replayBtn.setFillStyle(0x0ea5e9));
-    replayBtn.on('pointerout', () => replayBtn.setFillStyle(0x0284c7));
-    replayBtn.on('pointerdown', () => {
-      cyberAudio.startBGM();
-      this.scene.start('GameScene');
-    });
-  }
-}
-
-// ============================================================================
-// Phaser Game Configuration
-// ============================================================================
-const config = {
-  type: Phaser.AUTO,
-  width: 900,
-  height: 540,
-  parent: 'game-container',
-  physics: {
-    default: 'arcade',
-    arcade: {
-      gravity: { y: 900 },
-      debug: false
-    }
-  },
-  scene: [MainMenuScene, GameScene, EndScene]
-};
-
-new Phaser.Game(config);
+window.addEventListener('DOMContentLoaded', () => {
+  const container = document.getElementById('game-container');
+  const canvas = document.createElement('canvas');
+  canvas.width = CANVAS_W;
+  canvas.height = CANVAS_H;
+  container.appendChild(canvas);
+  new NetShieldEngine(canvas);
+});
